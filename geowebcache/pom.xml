@@ -54,6 +54,10 @@
       <url>http://repository.codehaus.org</url>
     </repository>
     <repository>
+       <id>sonatype-forge</id>
+       <url>https://repository.sonatype.org/content/groups/forge/</url>
+    </repository>
+    <repository>
       <id>maven-restlet</id>
       <name>Public online Restlet repository</name>
       <url>http://maven.restlet.org</url>
