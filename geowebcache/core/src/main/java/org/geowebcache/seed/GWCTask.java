@@ -74,6 +74,12 @@ public abstract class GWCTask {
         this.groupStartTime = System.currentTimeMillis();
         try {
             doActionInternal();
+        } catch(InterruptedException ie) {
+            doAbnormalExit(ie);
+            throw ie;
+        } catch(GeoWebCacheException gwce) {
+            doAbnormalExit(gwce);
+            throw gwce;
         } finally {
             dispose();
             int membersRemaining = this.sharedThreadCount.decrementAndGet();
@@ -86,6 +92,8 @@ public abstract class GWCTask {
     }
 
     protected abstract void dispose();
+    
+    protected abstract void doAbnormalExit(Throwable t);
 
     /**
      * Extension point for subclasses to do what they do
@@ -161,13 +169,25 @@ public abstract class GWCTask {
         return parsedType;
     }
 
+    /**
+     * Controls the priority of this GWCTask. Default is GWCTask.PRIORITY.LOW
+     * 
+     * @return Priority of this task as a PRIORITY enum value.
+     */
+    public PRIORITY getPriority() {
+        return priority;
+    }
+
     public STATE getState() {
         return state;
     }
 
     protected void checkInterrupted() throws InterruptedException {
         if (Thread.interrupted()) {
-            this.state = STATE.DEAD;
+            if(this.state == STATE.READY || this.state == STATE.RUNNING) {
+                this.state = STATE.INTERRUPTED;
+            }
+            addLog(JobLogObject.createInfoLog(jobId, "Interrupted", "A thread of the job has been interrupted."));
             throw new InterruptedException();
         }
     }

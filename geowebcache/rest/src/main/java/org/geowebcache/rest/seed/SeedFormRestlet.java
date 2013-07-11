@@ -19,6 +19,7 @@ package org.geowebcache.rest.seed;
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 import java.text.NumberFormat;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -28,8 +29,10 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.Map.Entry;
 
 import org.geowebcache.GeoWebCacheException;
+import org.geowebcache.config.XMLConfiguration;
 import org.geowebcache.filter.parameters.FloatParameterFilter;
 import org.geowebcache.filter.parameters.ParameterFilter;
 import org.geowebcache.filter.parameters.RegexParameterFilter;
@@ -46,7 +49,9 @@ import org.geowebcache.seed.GWCTask.STATE;
 import org.geowebcache.seed.GWCTask.TYPE;
 import org.geowebcache.seed.SeedRequest;
 import org.geowebcache.seed.TileBreeder;
-import org.geowebcache.storage.TileRange;
+import org.geowebcache.seed.GWCTask.PRIORITY;
+import org.geowebcache.seed.GWCTask.TYPE;
+import org.geowebcache.storage.JobObject;
 import org.geowebcache.util.ServletUtils;
 import org.restlet.data.Form;
 import org.restlet.data.MediaType;
@@ -61,6 +66,8 @@ import org.springframework.util.Assert;
  */
 public class SeedFormRestlet extends GWCRestlet {
     // private static Log log = LogFactory.getLog(org.geowebcache.rest.seed.SeedFormRestlet.class);
+
+    private XMLConfiguration xmlConfig;
 
     private TileBreeder seeder;
 
@@ -175,6 +182,10 @@ public class SeedFormRestlet extends GWCRestlet {
         makeThreadCountPullDown(doc);
 
         makeTypePullDown(doc);
+        
+        makeThroughputPullDown(doc);
+
+        makeScheduleFields(doc);
 
         makeGridSetPulldown(doc, tl);
 
@@ -188,8 +199,12 @@ public class SeedFormRestlet extends GWCRestlet {
 
         makeBboxFields(doc);
 
+        makeEstimate(doc);
+
         makeSubmit(doc);
 
+        makeOpenLayersBBoxInput(doc);
+        
         makeFormFooter(doc);
 
         makeFooter(doc);
@@ -258,7 +273,7 @@ public class SeedFormRestlet extends GWCRestlet {
 
         StringBuilder doc = new StringBuilder();
 
-        makeHeader(doc);
+        makeHeader(doc, tl);
 
         doc.append("<h3>Task submitted</h3>\n");
 
@@ -299,13 +314,36 @@ public class SeedFormRestlet extends GWCRestlet {
         doc.append("</td></tr>\n");
     }
 
+    private void makeEstimate(StringBuilder doc) {
+        doc.append("<tr><td valign=\"top\">Estimate:</td><td>\n");
+        makeButton(doc, "doEstimateButton", "Update", "onclick=\"doEstimate();\"");
+        doc.append("<span name=\"estimates\" id=\"estimates\">estimates not calculated yet ...</span>\n");
+        doc.append("</td></tr>\n");
+    }
+    
     private void makeBboxFields(StringBuilder doc) {
         doc.append("<tr><td valign=\"top\">Bounding box:</td><td>\n");
-        makeTextInput(doc, "minX", 6);
-        makeTextInput(doc, "minY", 6);
-        makeTextInput(doc, "maxX", 6);
-        makeTextInput(doc, "maxY", 6);
-        doc.append("</br>These are optional, approximate values are fine.");
+        makeTextInput(doc, "minX", 12);
+        makeTextInput(doc, "minY", 12);
+        makeTextInput(doc, "maxX", 12);
+        makeTextInput(doc, "maxY", 12);
+        makeButton(doc, "updateExtent", "Update", "onclick=\"updateFeature();\"");
+        makeButton(doc, "resetExtent", "Reset", "onclick=\"resetFeature()\"");
+        doc.append("</br>Approximate values are fine.");
+        doc.append("</td></tr>\n");
+    }
+    
+    private void makeOpenLayersBBoxInput(StringBuilder doc) {
+        doc.append("<tr><td colspan=\"2\" valign=\"top\">\n");
+
+        doc.append("<div id=\"controls\" style=\"float:left; width: 512px\">\n");
+        doc.append("  <div id=\"map\" class=\"bboxinputmap\"></div>\n");
+        doc.append("  <div id=\"wrapper\" style=\"float:left\">\n");
+        doc.append("    <div id=\"mapLocation\"></div>\n");
+        doc.append("    <div id=\"mapScale\"></div>\n");
+        doc.append("  </div>\n");
+        doc.append("</div>\n");
+        
         doc.append("</td></tr>\n");
     }
 
@@ -325,6 +363,10 @@ public class SeedFormRestlet extends GWCRestlet {
 
     private void makeSubmit(StringBuilder doc) {
         doc.append("<tr><td></td><td><input type=\"submit\" value=\"Submit\"></td></tr>\n");
+    }
+
+    private void makeButton(StringBuilder doc, String id, String text, String extra) {
+        doc.append("<input type=\"button\" name=\"" + id + "\" id=\"" + id + "\" value=\"" + text + "\" " + extra + "/>\n");
     }
 
     private void makeZoomStopPullDown(StringBuilder doc, TileLayer tl) {
@@ -399,6 +441,38 @@ public class SeedFormRestlet extends GWCRestlet {
         doc.append("</td></tr>\n");
     }
 
+    private void makeThroughputPullDown(StringBuilder doc) {
+        doc.append("<tr><td>Throughput:</td><td>\n");
+        Map<String, String> keysValues = new TreeMap<String, String>();
+
+        for(int i = 1; i < 4; i++) {
+            for(int j = 1; j <= 100; j*=10) {
+                if(i == 3) {
+                    i = 5;
+                }
+                int tps = i * j;
+                keysValues.put(String.format("%03d", tps), String.format("%d requests / second", tps));
+            }
+        }
+
+        keysValues.put("-1", "No Restrictions");
+        
+        makePullDown(doc, "maxThroughput", keysValues, "No Restrictions", true);
+        doc.append("</td></tr>\n");
+    }
+
+    private void makeScheduleFields(StringBuilder doc) {
+        doc.append("<tr><td>Schedule (<a target=\"_blank\" href=\"http://en.wikipedia.org/wiki/Cron\">CRON</a>):</td><td>\n");
+
+        doc.append("<input type=\"radio\" name=\"is_scheduled\" value=\"false\" checked=\"checked\"/>Now ");
+        doc.append("<input type=\"radio\" name=\"is_scheduled\" value=\"once\"/>Run Once\n");
+        doc.append("<input type=\"radio\" name=\"is_scheduled\" value=\"true\"/>Repeat\n");
+        doc.append("<tr><td>&nbsp;</td><td>\n");
+        doc.append("<input type=\"text\" name=\"schedule\"/>\n");
+        
+        doc.append("</td></tr>\n");
+    }
+
     private void makeGridSetPulldown(StringBuilder doc, TileLayer tl) {
         doc.append("<tr><td>Grid Set:</td><td>\n");
         Map<String, String> keysValues = new TreeMap<String, String>();
@@ -417,18 +491,32 @@ public class SeedFormRestlet extends GWCRestlet {
 
     private void makePullDown(StringBuilder doc, String id, Map<String, String> keysValues,
             String defaultKey) {
-        doc.append("<select name=\"" + id + "\">\n");
+        makePullDown(doc, id, keysValues, defaultKey, false);
+    }
+    private void makePullDown(StringBuilder doc, String id, Map<String, String> keysValues,
+            String defaultKey, boolean orderByValue) {
+    
+        doc.append("<select name=\"" + id + "\" id=\"" + id + "\">\n");
 
         Iterator<Entry<String, String>> iter = keysValues.entrySet().iterator();
 
         while (iter.hasNext()) {
             Entry<String, String> entry = iter.next();
-            if (entry.getKey().equals(defaultKey)) {
-                doc.append("<option value=\"" + entry.getValue() + "\" selected=\"selected\">"
-                        + entry.getKey() + "</option>\n");
+            
+            String key;
+            String value;
+            
+            if(orderByValue) {
+                key = entry.getValue();
+                value = entry.getKey();
             } else {
-                doc.append("<option value=\"" + entry.getValue() + "\">" + entry.getKey()
-                        + "</option>\n");
+                key = entry.getKey();
+                value = entry.getValue();
+            }
+            if (key.equals(defaultKey)) {
+                doc.append("<option value=\"" + value + "\" selected=\"selected\">" + key + "</option>\n");
+            } else {
+                doc.append("<option value=\"" + value + "\">" + key + "</option>\n");
             }
         }
 
@@ -446,8 +534,56 @@ public class SeedFormRestlet extends GWCRestlet {
         doc.append("</form>\n");
     }
 
-    private void makeHeader(StringBuilder doc) {
-        doc.append("<html>\n" + ServletUtils.gwcHtmlHeader("GWC Seed Form") + "<body>\n"
+    private void makeHeader(StringBuilder doc, TileLayer tl) {
+        makeHeader(doc, tl, null);
+    }
+    private void makeHeader(StringBuilder doc, TileLayer tl, String bodyOnLoad) {
+        String basemapConfig = xmlConfig.getBasemapConfig();
+        
+        if(basemapConfig == null) {
+            basemapConfig = "    return null;\n";
+        }
+        
+        String extras = "<script type=\"text/javascript\" src=\"../web/openlayers/openlayers-gwc.js\"></script>\n";
+		
+        GridSubset gridSubset = tl.getGridSubset(tl.getGridSubsets().iterator().next());
+		
+        extras += "<script type=\"text/javascript\">\n" +
+                  "  OpenLayers.ImgPath = '../web/openlayers/img/';\n" + 
+                  "  var layerName = '" + tl.getName() + "';\n" + 
+                  "  var layerFormat = '" + tl.getDefaultMimeType().getMimeType() + "';\n" + 
+                  "  var layerTileSize = new OpenLayers.Size(" + gridSubset.getTileWidth() + "," + gridSubset.getTileHeight() + ");\n" + 
+                  "  var layerProjection = new OpenLayers.Projection('" + gridSubset.getSRS() + "');\n" + 
+                  "  var layerResolutions = " + Arrays.toString(gridSubset.getResolutions()) + ";\n" +
+                  "  var layerExtents = new OpenLayers.Bounds(" + gridSubset.getOriginalExtent().toString() + ");\n" + 
+                  "  var maxExtents = new OpenLayers.Bounds(" + gridSubset.getGridSetBounds().toString() + ");\n" + 
+                  "  var layerUnits = '" + gridSubset.getGridSet().guessMapUnits() + "';\n" +
+                  "  var layerDotsPerInch = " + gridSubset.getDotsPerInch() + "\n;" +
+                  "  function getBasemapLayer() {\n" + 
+                  basemapConfig +
+                  "  }\n" +
+                  "</script>\n";
+
+        extras += "<script type=\"text/javascript\" src=\"../web/js/gwc/util.js\"></script>\n";
+        extras += "<script type=\"text/javascript\" src=\"../web/js/seedform.js\"></script>\n";
+        
+        extras += "<link rel=\"stylesheet\" href=\"../web/openlayers/theme/default/style.css\" type=\"text/css\">\n" + 
+                  "  <style type=\"text/css\">\n" + 
+                  "  .bboxinputmap { width: 768px; height: 512px; border: 1px solid #ccc; }\n" + 
+                  "  .olControlEditingToolbar .olControlSizeItemActive {\n" +  
+                  "    background-position: 0px -23px;\n" + 
+                  "  }\n" + 
+                  "  .olControlEditingToolbar .olControlSizeItemInactive {\n" +  
+                  "    background-position: 0px -0px;\n" + 
+                  "  }\n" + 
+                  "</style>\n";
+
+        String bodyTag = "<body>";
+        if(bodyOnLoad != null) {
+            bodyTag = String.format("<body onload=\"%s\">", bodyOnLoad);
+        }
+        
+        doc.append("<html>\n" + ServletUtils.gwcHtmlHeader("GWC Seed Form", extras) + bodyTag + "\n"
                 + ServletUtils.gwcHtmlLogoLink("../../"));
     }
 
@@ -471,15 +607,16 @@ public class SeedFormRestlet extends GWCRestlet {
 
         doc.append("<h4>List of currently executing tasks:</h4>\n");
 
-        Iterator<GWCTask> iter = seeder.getRunningAndPendingTasks();
-
+        Iterator<Entry<Long, GWCTask>> iter = seeder.getRunningTasksIterator();
+        
         boolean tasks = false;
         if (!iter.hasNext()) {
             doc.append("<ul><li><i>none</i></li></ul>\n");
         } else {
-            doc.append("<table border=\"0\">");
-            doc.append("<tr style=\"font-weight: bold;\"><td style=\"padding-right:20px;\">Id</td><td style=\"padding-right:20px;\">Layer</td><td style=\"padding-right:20px;\">Status</td><td style=\"padding-right:20px;\">Type</td><td>Estimated # of tiles</td>"
-                    + "<td style=\"padding-right:20px;\">Tiles completed</td><td style=\"padding-right:20px;\">Time elapsed</td><td>Time remaining</td><td>Tasks</td><td>&nbsp;</td>");
+            doc.append("<table border=\"0\" cellspacing=\"10\">");
+            doc.append("<tr style=\"font-weight: bold;\"><td>Id</td><td>Layer</td><td>Type</td><td>Estimated # of tiles</td>"
+                    + "<td>Tiles completed</td><td>Time elapsed</td><td>Time remaining</td><td>Threads</td><td>&nbsp;</td>");
+            doc.append("<td>").append(makeKillallThreadsForm(tl)).append("</td>");
             doc.append("</tr>");
             tasks = true;
         }
@@ -488,60 +625,48 @@ public class SeedFormRestlet extends GWCRestlet {
 
         final String layerName = tl.getName();
         while (iter.hasNext()) {
-            GWCTask task = iter.next();
-            if (!listAll && !layerName.equals(task.getLayerName())) {
-                continue;
+            Entry<Long, GWCTask> entry = iter.next();
+            GWCTask task = entry.getValue();
+            
+            if(task.getType() != TYPE.JOB_MONITOR) {
+                final long spent = task.getTimeSpent();
+                final long remining = task.getTimeRemaining();
+                final long tilesDone = task.getTilesDone();
+                final long tilesTotal = task.getTilesTotal();
+    
+                NumberFormat nf = NumberFormat.getInstance(Locale.ENGLISH);
+                nf.setGroupingUsed(true);
+                final String tilesTotalStr;
+                if (tilesTotal < 0) {
+                    tilesTotalStr = "Too many to count";
+                } else {
+                    tilesTotalStr = nf.format(tilesTotal);
+                }
+                final String tilesDoneStr = nf.format(task.getTilesDone());
+                String timeSpent = toTimeString(spent, tilesDone, tilesTotal);
+                String timeRemaining = toTimeString(remining, tilesDone, tilesTotal);
+    
+                doc.append("<tr>");
+                doc.append("<td>").append(entry.getKey()).append("</td>");
+                doc.append("<td>").append(task.getLayerName()).append("</td>");
+                doc.append("<td>").append(task.getType()).append("</td>");
+                doc.append("<td>").append(tilesTotalStr).append("</td>");
+                doc.append("<td>").append(tilesDoneStr).append("</td>");
+                doc.append("<td>").append(timeSpent).append("</td>");
+                doc.append("<td>").append(timeRemaining).append("</td>");
+                doc.append("<td>(Thread ").append(task.getThreadOffset() + 1).append(" of ")
+                        .append(task.getThreadCount()).append(") </td>");
+                doc.append("<td>").append(makeThreadKillForm(entry.getKey(), tl)).append("</td>");
+                doc.append("<tr>");
             }
-            final long spent = task.getTimeSpent();
-            final long remining = task.getTimeRemaining();
-            final long tilesDone = task.getTilesDone();
-            final long tilesTotal = task.getTilesTotal();
-
-            NumberFormat nf = NumberFormat.getInstance(Locale.ENGLISH);
-            nf.setGroupingUsed(true);
-            final String tilesTotalStr;
-            if (tilesTotal < 0) {
-                tilesTotalStr = "Too many to count";
-            } else {
-                tilesTotalStr = nf.format(tilesTotal);
-            }
-            final String tilesDoneStr = nf.format(task.getTilesDone());
-            final STATE state = task.getState();
-
-            final String status = STATE.UNSET.equals(state) || STATE.READY.equals(state) ? "PENDING"
-                    : state.toString();
-
-            String timeSpent = toTimeString(spent, tilesDone, tilesTotal);
-            String timeRemaining = toTimeString(remining, tilesDone, tilesTotal);
-
-            String bgColor = ++row % 2 == 0 ? "#FFFFFF" : "#DDDDDD";
-            doc.append("<tr style=\"background-color:" + bgColor + ";\">");
-            doc.append("<td style=\"text-align:right\">").append(task.getTaskId()).append("</td>");
-            doc.append("<td>");
-            if (!layerName.equals(task.getLayerName())) {
-                doc.append("<a href=\"./").append(task.getLayerName()).append("\">");
-            }
-            doc.append(task.getLayerName());
-            if (!layerName.equals(task.getLayerName())) {
-                doc.append("</a>");
-            }
-            doc.append("</td>");
-            doc.append("<td>").append(status).append("</td>");
-            doc.append("<td>").append(task.getType()).append("</td>");
-            doc.append("<td>").append(tilesTotalStr).append("</td>");
-            doc.append("<td>").append(tilesDoneStr).append("</td>");
-            doc.append("<td>").append(timeSpent).append("</td>");
-            doc.append("<td>").append(timeRemaining).append("</td>");
-            doc.append("<td>(Task ").append(task.getThreadOffset() + 1).append(" of ")
-                    .append(task.getThreadCount()).append(") </td>");
-            doc.append("<td>").append(makeThreadKillForm(task.getTaskId(), tl)).append("</td>");
-            doc.append("<tr>");
         }
 
         if (tasks) {
             doc.append("</table>");
         }
-        doc.append("<p><a href=\"./" + layerName + "\">Refresh list</a></p>\n");
+        doc.append("<p><a href=\"./" + tl.getName() + "\">Refresh list</a></p>\n");
+        doc.append("<p>For more detail, go to the <a href=\"../web/joblist.html\">Job Manager Page</a></p>\n");
+
     }
 
     private String toTimeString(long timeSeconds, final long tilesDone, final long tilesTotal) {
@@ -649,57 +774,19 @@ public class SeedFormRestlet extends GWCRestlet {
         doc.append("</body></html>\n");
     }
 
-    private void handleKillAllThreadsPost(Form form, TileLayer tl, Response resp)
-            throws RestletException {
-
-        final boolean allLayers = tl == null;
-
-        String killCode = form.getFirst("kill_all").getValue();
-
-        final Iterator<GWCTask> tasks;
-        if ("1".equals(killCode) || "running".equalsIgnoreCase(killCode)) {
-            killCode = "running";
-            tasks = seeder.getRunningTasks();
-        } else if ("pending".equalsIgnoreCase(killCode)) {
-            tasks = seeder.getPendingTasks();
-        } else if ("all".equalsIgnoreCase(killCode)) {
-            tasks = seeder.getRunningAndPendingTasks();
-        } else {
-            throw new RestletException("Unknown kill_all code: '" + killCode
-                    + "'. One of all|running|pending is expected.", Status.CLIENT_ERROR_BAD_REQUEST);
-        }
-
-        List<GWCTask> terminatedTasks = new LinkedList<GWCTask>();
-        List<GWCTask> nonTerminatedTasks = new LinkedList<GWCTask>();
-        while (tasks.hasNext()) {
-            GWCTask task = tasks.next();
-            String layerName = task.getLayerName();
-            if (!allLayers && !tl.getName().equals(layerName)) {
-                continue;
-            }
+    private void handleKillAllThreadsPost(Form form, TileLayer tl, Response resp) {
+        Iterator<Entry<Long, GWCTask>> runningTasks = seeder.getRunningTasksIterator();
+        while (runningTasks.hasNext()) {
+            Entry<Long, GWCTask> next = runningTasks.next();
+            GWCTask task = next.getValue();
             long taskId = task.getTaskId();
-            boolean terminated = seeder.terminateGWCTask(taskId);
-            if (terminated) {
-                terminatedTasks.add(task);
-            } else {
-                nonTerminatedTasks.add(task);
-            }
+            seeder.terminateGWCTask(taskId);
         }
         StringBuilder doc = new StringBuilder();
 
-        makeHeader(doc);
-        doc.append("<p>Requested to terminate ").append(killCode).append(" tasks.");
-        doc.append("Terminated tasks: <ul>");
-        for (GWCTask t : terminatedTasks) {
-            doc.append("<li>").append(t).append("</li>");
-        }
-        doc.append("</ul>Tasks already finished: <ul>");
-        for (GWCTask t : nonTerminatedTasks) {
-            doc.append("<li>").append(t).append("</li>");
-        }
-        if (tl != null) {
-            doc.append("</ul><p><a href=\"./" + tl.getName() + "\">Go back</a></p>\n");
-        }
+        makeHeader(doc, tl);
+        doc.append("<ul><li>Requested to terminate all tasks.</li></ul>");
+        doc.append("<p><a href=\"./" + tl.getName() + "\">Go back</a></p>\n");
 
         resp.setEntity(doc.toString(), MediaType.TEXT_HTML);
     }
@@ -709,7 +796,7 @@ public class SeedFormRestlet extends GWCRestlet {
 
         StringBuilder doc = new StringBuilder();
 
-        makeHeader(doc);
+        makeHeader(doc, tl);
 
         if (seeder.terminateGWCTask(Long.parseLong(id))) {
             doc.append("<ul><li>Requested to terminate task " + id + ".</li></ul>");
@@ -757,23 +844,43 @@ public class SeedFormRestlet extends GWCRestlet {
             fullParameters = tl.getModifiableParameters(parameters, "UTF-8");
         }
 
-        TYPE type = GWCTask.TYPE.valueOf(form.getFirst("type").getValue().toUpperCase());
+        TYPE type = TYPE.valueOf(form.getFirst("type").getValue().toUpperCase());
+        
+        // Priority isn't exposed through the seed form now
+        PRIORITY priority = PRIORITY.LOW;
+        if(type == TYPE.TRUNCATE) {
+            priority = PRIORITY.NORMAL;
+        }
+        
+        String schedule = JobObject.NO_SCHEDULE;
+        if(form.getFirst("is_scheduled") != null) {
+            if(form.getFirst("is_scheduled").getValue().equals("true") || 
+               form.getFirst("is_scheduled").getValue().equals("once")) {
+                if(form.getFirst("schedule") != null) {
+                    schedule = form.getFirst("schedule").getValue();
+                }
+            }
+        }
+        
+        boolean runOnce = false;
+        if(form.getFirst("is_scheduled") != null) {
+            runOnce = form.getFirst("is_scheduled").getValue().equals("once");
+        }
+        
+        int maxThroughput = -1;
+        if(form.getFirst("maxThroughput") != null) {
+            maxThroughput = Integer.parseInt(form.getFirst("maxThroughput").getValue());
+        }
 
         final String layerName = tl.getName();
         SeedRequest sr = new SeedRequest(layerName, bounds, gridSetId, threadCount, zoomStart,
-                zoomStop, format, type, fullParameters);
+                zoomStop, format, type, priority, schedule, runOnce, maxThroughput, fullParameters);
 
-        TileRange tr = TileBreeder.createTileRange(sr, tl);
-
-        GWCTask[] tasks;
         try {
-            tasks = seeder.createTasks(tr, tl, sr.getType(), sr.getThreadCount(),
-                    sr.getFilterUpdate());
-        } catch (GeoWebCacheException e) {
-            throw new RestletException(e.getMessage(), Status.SERVER_ERROR_INTERNAL);
+            seeder.seed(sr);
+        } catch(GeoWebCacheException gwce) {
+            throw new RestletException(gwce.getMessage(), Status.SERVER_ERROR_INTERNAL);
         }
-
-        seeder.dispatchTasks(tasks);
 
         // Give the thread executor a chance to run
         try {
@@ -801,4 +908,7 @@ public class SeedFormRestlet extends GWCRestlet {
         this.seeder = seeder;
     }
 
+    public void setXMLConfiguration(XMLConfiguration xmlConfig) {
+        this.xmlConfig = xmlConfig;
+    }
 }

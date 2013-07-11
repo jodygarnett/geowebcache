@@ -30,6 +30,7 @@ import org.geowebcache.conveyor.ConveyorTile;
 import org.geowebcache.filter.request.RequestFilter;
 import org.geowebcache.layer.TileLayer;
 import org.geowebcache.layer.wms.WMSLayer;
+import org.geowebcache.storage.JobLogObject;
 import org.geowebcache.storage.StorageBroker;
 import org.geowebcache.storage.TileRange;
 import org.geowebcache.storage.TileRangeIterator;
@@ -59,6 +60,12 @@ class SeedTask extends GWCTask {
 
     private AtomicLong sharedFailureCounter;
 
+    private int minTimeBetweenRequests;
+    
+    private ThroughputTracker throughputTracker = null;
+    
+    private long seedStartTime;
+    
     /**
      * Constructs a SeedTask
      * @param sb
@@ -80,6 +87,15 @@ class SeedTask extends GWCTask {
         totalFailuresBeforeAborting = 10000;
         sharedFailureCounter = new AtomicLong();
 
+        if(maxThroughput > 0) {
+            minTimeBetweenRequests = (int)(1000 / maxThroughput);
+        } else {
+            minTimeBetweenRequests = 0;
+        }
+        
+        throughputTracker = new ThroughputTracker(5); // minimal throughput tracking by default
+        seedStartTime = -1;
+
         if (reseed) {
             super.parsedType = GWCTask.TYPE.RESEED;
         } else {
@@ -95,9 +111,7 @@ class SeedTask extends GWCTask {
     protected void doActionInternal() throws GeoWebCacheException, InterruptedException {
         super.state = GWCTask.STATE.RUNNING;
 
-        // Lower the priority of the thread
-        Thread.currentThread().setPriority(
-                (java.lang.Thread.NORM_PRIORITY + java.lang.Thread.MIN_PRIORITY) / 2);
+        Thread.currentThread().setPriority(priority.getThreadPriority());
 
         checkInterrupted();
 
@@ -110,8 +124,7 @@ class SeedTask extends GWCTask {
         TileRange tr = trIter.getTileRange();
 
         checkInterrupted();
-        // TODO move to TileRange object, or distinguish between thread and task
-        super.tilesTotal = tileCount(tr);
+        super.tilesTotal = new SeedEstimator().tileCount(tr);
 
         final int metaTilingFactorX = tl.getMetaTilingFactors()[0];
         final int metaTilingFactorY = tl.getMetaTilingFactors()[1];
@@ -123,6 +136,7 @@ class SeedTask extends GWCTask {
 
         long seedCalls = 0;
         while (gridLoc != null && this.terminate == false) {
+            seedStartTime = System.currentTimeMillis();
 
             checkInterrupted();
             Map<String, String> fullParameters = tr.getParameters();
@@ -151,6 +165,7 @@ class SeedTask extends GWCTask {
                                 + ". Error count reached configured maximum of "
                                 + totalFailuresBeforeAborting);
                         super.state = GWCTask.STATE.DEAD;
+                        addLog(JobLogObject.createErrorLog(jobId, "Thread Aborted Seeding", "A thread of the job has aborted seeding due to too many failures."));
                         return;
                     }
                     String logMsg = "Seed failed at " + tile.toString() + " after "
@@ -164,9 +179,9 @@ class SeedTask extends GWCTask {
                             Thread.sleep(tileFailureRetryCount);
                         }
                     } else {
-                        log.info(logMsg
-                                + " Skipping and continuing with next tile. Original error: "
-                                + e.getMessage());
+                        logMsg += " Skipping and continuing with next tile. Original error: " + e.getMessage();
+                        log.info(logMsg);
+                        addLog(JobLogObject.createWarnLog(jobId, "Seed Failed", logMsg));
                     }
                 }
             }
@@ -187,14 +202,23 @@ class SeedTask extends GWCTask {
             checkInterrupted();
             seedCalls++;
             gridLoc = trIter.nextMetaGridLocation(gridLoc);
+
+            checkThrottling();
         }
 
         if (this.terminate) {
-            log.info("Job on " + Thread.currentThread().getName() + " was terminated after "
-                    + this.tilesDone + " tiles");
+            String logMsg = "Thread " + Thread.currentThread().getName() + " was terminated after "
+                    + this.tilesDone + " tiles";
+            log.info(logMsg);
+            addLog(JobLogObject.createInfoLog(jobId, "Seeding Terminated", logMsg));
+            super.state = GWCTask.STATE.KILLED;
         } else {
-            log.info(Thread.currentThread().getName() + " completed (re)seeding layer " + layerName
-                    + " after " + this.tilesDone + " tiles and " + this.timeSpent + " seconds.");
+            String logMsg = Thread.currentThread().getName() + " completed (re)seeding layer "
+                    + layerName + " after " + this.tilesDone + " tiles and " + this.timeSpent
+                    + " seconds.";
+            log.info(logMsg);
+            addLog(JobLogObject.createInfoLog(jobId, "Seeding Completed", logMsg));
+            super.state = GWCTask.STATE.DONE;
         }
 
         checkInterrupted();
@@ -203,6 +227,31 @@ class SeedTask extends GWCTask {
         }
 
         super.state = GWCTask.STATE.DONE;
+    }
+
+    protected void doAbnormalExit(Throwable t) {
+        String logMsg = "Thread " + Thread.currentThread().getName() + " was terminated after "
+                + this.tilesDone + " tiles due to the following exception:\n";
+        logMsg += t.getClass().getName() + ": " + t.getMessage();
+        addLog(JobLogObject.createErrorLog(jobId, "Seeding Terminated Abnormally", logMsg));
+        super.state = GWCTask.STATE.DEAD;
+    }
+
+    private void checkThrottling() throws InterruptedException {
+        if(seedStartTime != -1) {
+            int sample = (int)(System.currentTimeMillis() - seedStartTime);
+            // There is a 0.02 of a second buffer here as a rough "factor out the overhead" and "if
+            // it's close don't sleep the thread for almost no time" reasons
+            if(minTimeBetweenRequests > 0 && minTimeBetweenRequests > (sample + 20)) {
+                try {
+                    Thread.sleep(minTimeBetweenRequests - sample);
+                } catch (InterruptedException e) {
+                    checkInterrupted();
+                }
+                sample = (int)(System.currentTimeMillis() - seedStartTime);
+            }
+            throughputTracker.addSample(sample);
+        }
     }
 
     /**
@@ -257,10 +306,9 @@ class SeedTask extends GWCTask {
         this.timeSpent = (int) (System.currentTimeMillis() - start_time) / 1000;
 
         int threadCount = sharedThreadCount.get();
-        long timeTotal = Math.round((double) timeSpent
-                * (((double) tilesTotal / threadCount) / (double) tilesCount));
+        long timeTotal = new SeedEstimator().totalTimeEstimate(timeSpent, tilesDone, tilesTotal, threadCount);
 
-        this.timeRemaining = (int) (timeTotal - timeSpent);
+        timeRemaining = (int) (timeTotal - timeSpent);
     }
 
     /**
@@ -290,11 +338,27 @@ class SeedTask extends GWCTask {
         this.totalFailuresBeforeAborting = totalFailuresBeforeAborting;
         this.sharedFailureCounter = sharedFailureCounter;
     }
+    
+    public void setThrottlingPolicy(int sampleSize) {
+        throughputTracker = new ThroughputTracker(sampleSize);
+    }
 
     @Override
     protected void dispose() {
         if (tl instanceof WMSLayer) {
             ((WMSLayer) tl).cleanUpThreadLocals();
         }
+    }
+    
+    public long getSharedFailureCounter() {
+        return(sharedFailureCounter.get());
+    }
+
+    /**
+     * Number of requests this seed task is handling per second.
+     * @return current throughput in actions (in this case requests) per second
+     */
+    public float getThroughput() {
+        return throughputTracker.getThroughput();
     }
 }

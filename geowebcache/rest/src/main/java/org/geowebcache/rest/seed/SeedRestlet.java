@@ -17,6 +17,7 @@
  */
 package org.geowebcache.rest.seed;
 
+import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 
@@ -32,6 +33,8 @@ import org.geowebcache.seed.SeedRequest;
 import org.geowebcache.seed.TileBreeder;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.restlet.data.MediaType;
+import org.restlet.data.Method;
 import org.restlet.data.Request;
 import org.restlet.data.Response;
 import org.restlet.data.Status;
@@ -40,6 +43,7 @@ import org.restlet.resource.Representation;
 
 import com.thoughtworks.xstream.XStream;
 import com.thoughtworks.xstream.io.json.JsonHierarchicalStreamDriver;
+import com.thoughtworks.xstream.io.xml.DomDriver;
 
 public class SeedRestlet extends GWCSeedingRestlet {
     @SuppressWarnings("unused")
@@ -47,6 +51,29 @@ public class SeedRestlet extends GWCSeedingRestlet {
 
     private TileBreeder seeder;
 
+    public JSONObject myrequest;
+
+    private XMLConfiguration xmlConfig; 
+    
+    public void handle(Request request, Response response){
+        Method met = request.getMethod();
+        try {
+            if (met.equals(Method.GET)) {
+                doGet(request, response);
+            } else if(met.equals(Method.POST)) {
+                doPost(request, response);
+            } else {
+                throw new RestletException("Method not allowed", Status.CLIENT_ERROR_METHOD_NOT_ALLOWED);
+            }
+        } catch (RestletException re) {
+            response.setEntity(re.getRepresentation());
+            response.setStatus(re.getStatus());
+        } catch (IOException ioe) {
+            response.setEntity("Encountered IO error " + ioe.getMessage(),MediaType.TEXT_PLAIN);
+            response.setStatus(Status.SERVER_ERROR_INTERNAL);
+        }
+    }
+    
     /**
      * Returns a StringRepresentation with the status of the running threads in the thread pool.
      */
@@ -102,9 +129,54 @@ public class SeedRestlet extends GWCSeedingRestlet {
         } catch (GeoWebCacheException e) {
             throw new RestletException(e.getMessage(), Status.SERVER_ERROR_INTERNAL);
         }
+    }
+
+
+    
+    /**
+     * Method responsible for handling incoming POSTs. It will parse the XML
+     * document and deserialize it into a SeedRequest, then create a SeedTask
+     * and forward it to the thread pool executor.
+     */
+    public void doPost(Request req, Response resp) 
+    throws RestletException, IOException {        
+        String formatExtension = (String) req.getAttributes().get("extension");
+        
+        SeedRequest sr = null;
+        
+        XStream xs = xmlConfig.configureXStreamForLayers(new XStream(new DomDriver()));
+        
+        if(formatExtension.equalsIgnoreCase("xml")) {
+            sr = (SeedRequest) xs.fromXML(req.getEntity().getStream());
+        } else if(formatExtension.equalsIgnoreCase("json")){
+            sr = (SeedRequest) xs.fromXML(convertJson(req.getEntity().getText()));
+        } else {
+            throw new RestletException("Format extension unknown or not specified: "
+                    + formatExtension,
+                    Status.CLIENT_ERROR_BAD_REQUEST);
+        }
+        
+        String layerName = null;
+        try {
+            layerName = URLDecoder.decode((String) req.getAttributes().get("layer"), "UTF-8");
+            sr.setLayerName(layerName);
+        } catch (UnsupportedEncodingException uee) { }
+        
+        
+        try {
+            seeder.seed(sr);
+        }catch(IllegalArgumentException e){
+            throw new RestletException(e.getMessage(), Status.CLIENT_ERROR_BAD_REQUEST);
+        } catch (GeoWebCacheException e) {
+            throw new RestletException(e.getMessage(), Status.SERVER_ERROR_INTERNAL);
+        }
 
     }
 
+    public void setXmlConfig(XMLConfiguration xmlConfig){
+        this.xmlConfig = xmlConfig;
+    }
+    
     public void setTileBreeder(TileBreeder seeder) {
         this.seeder = seeder;
     }

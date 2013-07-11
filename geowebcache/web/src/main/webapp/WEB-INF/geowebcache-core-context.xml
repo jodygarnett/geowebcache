@@ -66,6 +66,13 @@
     <constructor-arg ref="gwcGridSetBroker"/>
   </bean>
   
+  <bean id="gwcJobDispatcher" class="org.geowebcache.job.JobDispatcher">
+    <description>
+      JobDispatcher serves up jobs.
+    </description>
+    <property name="jobStore" ref="gwcJobStore"/>
+  </bean>
+  
   <bean id="gwcDefaultStorageFinder" class="org.geowebcache.storage.DefaultStorageFinder">
   	<constructor-arg ref="gwcAppCtx" />
   </bean>

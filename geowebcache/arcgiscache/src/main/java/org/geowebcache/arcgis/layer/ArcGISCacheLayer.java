@@ -349,6 +349,24 @@ public class ArcGISCacheLayer extends AbstractTileLayer {
         return null;
     }
 
+//    /**
+//     * 
+//     * @see org.geowebcache.layer.TileLayer#acquireLayerLock()
+//     */
+//    @Override
+//    public void acquireLayerLock() {
+//        throw new UnsupportedOperationException();
+//    }
+//
+//    /**
+//     * 
+//     * @see org.geowebcache.layer.TileLayer#releaseLayerLock()
+//     */
+//    @Override
+//    public void releaseLayerLock() {
+//        throw new UnsupportedOperationException();
+//    }
+
     /**
      * 
      * @see org.geowebcache.layer.TileLayer#setExpirationHeader(javax.servlet.http.HttpServletResponse,

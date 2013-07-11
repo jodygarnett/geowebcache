@@ -300,6 +300,14 @@ public class XMLConfiguration implements Configuration {
         }
     }
 
+    public synchronized String getBasemapConfig() {
+        return gwcConfig.getBasemapConfig();
+    }
+    
+    public synchronized Integer getJobUpdateFrequency() {
+		return gwcConfig.getJobUpdateFrequency();
+	}
+
     public synchronized ServiceInformation getServiceInformation() {
         return gwcConfig.getServiceInformation();
     }
@@ -544,6 +552,119 @@ public class XMLConfiguration implements Configuration {
         return xs;
     }
 
+    public XStream configureXStreamForJobs(XStream xs) {
+        commonXStreamConfig(xs);
+
+        xs.alias("jobs", List.class);
+        xs.alias("job", JobObject.class);
+
+        xs.aliasField("parameters", JobObject.class, "encodedParameters");
+
+        xs.registerConverter(new SRSConverter());
+        xs.registerConverter(new TimestampConverter());
+        xs.registerConverter(new BoundingBoxConverter());
+        
+        xs.omitField(JobObject.class, "newLogs");
+
+        return xs;
+    }
+    
+    public XStream configureXStreamForSeedEstimate(XStream xs) {
+        commonXStreamConfig(xs);
+        xs.alias("estimate", SeedEstimate.class);
+        xs.registerConverter(new BoundingBoxConverter());
+        return xs;
+    }
+    
+    public XStream configureXStreamForSettings(XStream xs) {
+        commonXStreamConfig(xs);
+        xs.alias("settings", SettingsObject.class);
+        xs.registerConverter(new BoundingBoxConverter());
+        return xs;
+    }
+
+    private XStream commonXStreamConfig(XStream xs) {
+        xs.setMode(XStream.NO_REFERENCES);
+
+        xs.alias("gwcConfiguration", GeoWebCacheConfiguration.class);
+        xs.useAttributeFor(GeoWebCacheConfiguration.class, "xmlns_xsi");
+        xs.aliasField("xmlns:xsi", GeoWebCacheConfiguration.class, "xmlns_xsi");
+        xs.useAttributeFor(GeoWebCacheConfiguration.class, "xsi_schemaLocation");
+        xs.aliasField("xsi:schemaLocation", GeoWebCacheConfiguration.class, "xsi_schemaLocation");
+        xs.useAttributeFor(GeoWebCacheConfiguration.class, "xmlns");
+
+        return xs;
+    }
+    
+    class SRSConverter extends IntConverter {
+        public boolean canConvert(Class type) {
+            return type.equals(SRS.class);
+        }
+        
+        public String toString(Object obj) {
+            return Integer.toString(((SRS)obj).getNumber());
+        }
+
+        public Object fromString(String val) {
+            return SRS.getSRS(Integer.parseInt(val));
+        }        
+    }    
+
+    class TimestampConverter implements SingleValueConverter {
+        public boolean canConvert(Class type) {
+            if(type.equals(Timestamp.class)) {
+                return true;
+            }
+            return type.equals(Timestamp.class);
+        }
+        
+        public String toString(Object obj) {
+            Timestamp ts = (Timestamp)obj;
+            
+            return (ISO8601DateParser.toString(ts));
+        }
+
+        public Object fromString(String val) {
+            Date d = null;
+            
+            if(val == null || val.equals("null")) {
+                return null;
+            } else {
+                try {
+                    d = ISO8601DateParser.parse(val);
+                } catch(ParseException pe) {
+                    log.warn("Couldn't parse date: " + val);
+                }
+                return new Timestamp(d.getTime());
+            }
+        }        
+    }    
+
+    class BoundingBoxConverter implements SingleValueConverter {
+        public boolean canConvert(Class type) {
+            return type.equals(BoundingBox.class);
+        }
+        
+        public String toString(Object obj) {
+            return ((BoundingBox)obj).toString();
+        }
+
+        public Object fromString(String val) {
+            return new BoundingBox(val);
+        }        
+    }
+
+    public XStream configureXStreamForJobLogs(XStream xs) {
+        commonXStreamConfig(xs);
+
+        xs.alias("logs", List.class);
+        xs.alias("log", JobLogObject.class);
+
+        xs.registerConverter(new TimestampConverter());
+        
+        return xs;
+    }
+    
     /**
      * Method responsible for writing out the entire GeoWebCacheConfiguration object
      * 
@@ -646,10 +767,14 @@ public class XMLConfiguration implements Configuration {
         }
 
         boolean removed = false;
-        removed = gwcConfig.getLayers().remove(tileLayer);
-        if (removed) {
-            updateLayers();
-            
+        tileLayer.acquireLayerLock();
+        try {
+            removed = gwcConfig.getLayers().remove(tileLayer);
+            if (removed) {
+                updateLayers();
+            }
+        } finally {
+            tileLayer.releaseLayerLock();
         }
         return removed;
     }
